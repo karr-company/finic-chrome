@@ -1,3 +1,5 @@
+import logging
+
 import uvicorn
 from fastapi import (
     FastAPI,
@@ -5,15 +7,15 @@ from fastapi import (
     status,
     WebSocket,
 )
-from starlette.websockets import WebSocketState
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBearer
 from fastapi.middleware.cors import CORSMiddleware
-import logging
+from playwright.async_api import async_playwright
+from starlette.websockets import WebSocketState
+
 from browser_session import BrowserSession
 from port_manager import PortManager
-from playwright.async_api import async_playwright
 
 
 app = FastAPI()
