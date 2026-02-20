@@ -26,8 +26,8 @@ COPY pyproject.toml poetry.lock README.md ./
 RUN poetry config virtualenvs.create false && poetry install --no-root --only main
 
 COPY src ./src
-RUN ls -la ${APP_HOME}
-# then install our own module
+
+# Install server module
 RUN poetry install --compile --no-interaction --no-ansi --only main
 
 # Remove Poetry

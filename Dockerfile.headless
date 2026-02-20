@@ -22,12 +22,14 @@ RUN curl -sSL https://install.python-poetry.org | python3 -
 ENV PATH="${PATH}:${POETRY_HOME}/bin"
 
 COPY pyproject.toml poetry.lock README.md ./
-# install only deps in dependency list first and lockfile to cache them
+
+# Install only deps in dependency list first and lockfile to cache them
 RUN poetry config virtualenvs.create false && poetry install --no-root --only main
 
 COPY src ./src
 RUN ls -la ${APP_HOME}
-# then install our own module
+
+# Install server module
 RUN poetry install --compile --no-interaction --no-ansi --only main
 
 # Remove Poetry
