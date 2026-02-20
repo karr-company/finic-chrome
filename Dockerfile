@@ -36,6 +36,8 @@ RUN curl -sSL https://install.python-poetry.org | python3 - --uninstall
 # Ensure the necessary directories exist and have the correct permissions
 RUN mkdir -p /opt/poetry-data /opt/.cache /opt/poetry-config /opt/poetry-venv \
     && chown -R appuser:appuser /opt/poetry-data /opt/.cache /opt/poetry-config /opt/poetry-venv ${APP_HOME}
+
+# Switch to non-root user
 USER appuser
 
 EXPOSE 8000
