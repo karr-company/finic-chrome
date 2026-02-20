@@ -1,7 +1,7 @@
 ARG PLAYWRIGHT_VERSION=1.47.0
 ARG UBUNTU_FLAVOR=jammy
 
-FROM mcr.microsoft.com/playwright/python:v${PLAYWRIGHT_VERSION}-${UBUNTU_FLAVOR}
+FROM mcr.microsoft.com/playwright/python:${PLAYWRIGHT_VERSION}-${UBUNTU_FLAVOR}
 
 # Tell Poetry where to place its cache and virtual environment
 ENV POETRY_HOME=/opt/poetry \
