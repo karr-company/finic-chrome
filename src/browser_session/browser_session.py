@@ -1,16 +1,18 @@
-from playwright.async_api import async_playwright
-import os
-import websockets
 import asyncio
+import os
 import requests
+import subprocess
+from typing import Optional
+import websockets
+import websockets.client
+
 from fastapi import (
     WebSocket,
 )
+from playwright.async_api import async_playwright
 from starlette.websockets import WebSocketDisconnect, WebSocketState
-import websockets.client
-from typing import Optional
 
-import websockets.exceptions
+
 
 SESSION_PATH = os.path.join(
     os.path.dirname(os.path.realpath(__file__)), "chrome_context"
@@ -165,4 +167,4 @@ class BrowserSession:
             print(f"Error closing the client WebSocket: {e}")
 
         if os.path.exists(self.data_dir):
-            os.system(f"rm -rf {self.data_dir}")
+            subprocess.run(["rm", "-rf", self.data_dir])
