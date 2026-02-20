@@ -6,9 +6,7 @@ from typing import Optional
 import websockets
 import websockets.client
 
-from fastapi import (
-    WebSocket,
-)
+from fastapi import WebSocket
 from playwright.async_api import async_playwright
 from starlette.websockets import WebSocketDisconnect, WebSocketState
 
