@@ -35,6 +35,7 @@ RUN poetry install --compile --no-interaction --no-ansi --only main
 # Remove Poetry
 RUN curl -sSL https://install.python-poetry.org | python3 - --uninstall
 
+# Ensure the necessary directories exist and have the correct permissions
 RUN mkdir -p /opt/poetry-data /opt/.cache /opt/poetry-config /opt/poetry-venv \
     && chown -R appuser:appuser /opt/poetry-data /opt/.cache /opt/poetry-config /opt/poetry-venv ${APP_HOME}
 USER appuser
