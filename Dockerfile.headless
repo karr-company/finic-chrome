@@ -10,7 +10,6 @@ ENV POETRY_HOME=/opt/poetry \
     POETRY_DATA_DIR=/opt/poetry-data \
     POETRY_CONFIG_DIR=/opt/poetry-config \
     POETRY_CACHE_DIR=/opt/.cache \
-    POETRY_VERSION=1.7.1 \
     PYTHONUNBUFFERED=1 \
     BROWSER_MODE=headless \
     APP_HOME=/app
