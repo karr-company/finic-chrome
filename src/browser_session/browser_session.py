@@ -16,8 +16,6 @@ SESSION_PATH = os.path.join(
     os.path.dirname(os.path.realpath(__file__)), "chrome_context"
 )
 
-HEADLESS = os.getenv("BROWSER_MODE", "headless") == "headless"
-
 BASE_FLAGS = [
     "--disable-dev-shm-usage",
     "--no-sandbox",
