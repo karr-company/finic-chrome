@@ -1,0 +1,42 @@
+ARG PLAYWRIGHT_VERSION=1.47.0
+ARG UBUNTU_FLAVOR=jammy
+
+FROM mcr.microsoft.com/playwright/python:v${PLAYWRIGHT_VERSION}-${UBUNTU_FLAVOR}
+
+# Tell Poetry where to place its cache and virtual environment
+ENV POETRY_HOME=/opt/poetry \
+    POETRY_VENV=/opt/poetry-venv \
+    POETRY_DATA_DIR=/opt/poetry-data \
+    POETRY_CONFIG_DIR=/opt/poetry-config \
+    POETRY_CACHE_DIR=/opt/.cache \
+    POETRY_VERSION=1.7.1 \
+    PYTHONUNBUFFERED=1 \
+    BROWSER_MODE=headless \
+    APP_HOME=/app
+
+RUN useradd -m -u 1001 appuser
+
+WORKDIR ${APP_HOME}
+
+RUN curl -sSL https://install.python-poetry.org | python3 -
+ENV PATH="${PATH}:${POETRY_HOME}/bin"
+
+COPY pyproject.toml poetry.lock README.md ./
+# install only deps in dependency list first and lockfile to cache them
+RUN poetry config virtualenvs.create false && poetry install --no-root --only main
+
+COPY src ./src
+RUN ls -la ${APP_HOME}
+# then install our own module
+RUN poetry install --compile --no-interaction --no-ansi --only main
+
+# Remove Poetry
+RUN curl -sSL https://install.python-poetry.org | python3 - --uninstall
+
+RUN mkdir -p /opt/poetry-data /opt/.cache /opt/poetry-config /opt/poetry-venv \
+    && chown -R appuser:appuser /opt/poetry-data /opt/.cache /opt/poetry-config /opt/poetry-venv ${APP_HOME}
+USER appuser
+
+EXPOSE 8000
+
+CMD ["start"]
