@@ -1,3 +1,4 @@
+# Use the official Playwright image as the base image
 ARG PLAYWRIGHT_VERSION=1.47.0
 ARG UBUNTU_FLAVOR=jammy
 
