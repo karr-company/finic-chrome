@@ -1,0 +1,32 @@
+# Config for Dependabot updates. See Documentation here:
+# https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
+
+version: 2
+updates:
+  # Update GitHub actions in workflows
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    # Every weekday
+    schedule:
+      interval: "daily"
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+
+  # Enable version updates for Docker
+  - package-ecosystem: "docker"
+    # Look for Dockerfiles in root directory
+    directory: "/"
+    # Every weekday
+    schedule:
+      interval: "daily"
+
+  # Enable version updates for Python
+  - package-ecosystem: "pip"
+    # Look for pyproject.toml in root directory
+    directory: "/"
+    # Every weekday
+    schedule:
+      interval: "daily"
+    
