@@ -1,8 +1,5 @@
 # Use the official Playwright image as the base image
-ARG PLAYWRIGHT_VERSION=1.47.0
-ARG UBUNTU_FLAVOR=jammy
-
-FROM mcr.microsoft.com/playwright/python:${PLAYWRIGHT_VERSION}-${UBUNTU_FLAVOR}
+FROM mcr.microsoft.com/playwright/python:v1.61.0-jammy
 
 # Tell Poetry where to place its cache and virtual environment
 ENV POETRY_HOME=/opt/poetry \
