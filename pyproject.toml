@@ -9,7 +9,7 @@ readme = "README.md"
 [tool.poetry.dependencies]
 python = "^3.10"
 playwright = "^1.61.0"
-fastapi = "^0.139.0"
+fastapi = "^0.139.1"
 uvicorn = "^0.51.0"
 requests = "^2.34.2"
 websockets = "^16.1"
