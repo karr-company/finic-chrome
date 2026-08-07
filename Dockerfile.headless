@@ -1,5 +1,5 @@
 # Use the official Playwright image as the base image
-FROM mcr.microsoft.com/playwright/python:v1.61.0-jammy
+FROM mcr.microsoft.com/playwright/python:v1.62.0-jammy
 
 # Tell Poetry where to place its cache and virtual environment
 ENV POETRY_HOME=/opt/poetry \
