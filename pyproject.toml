@@ -10,7 +10,7 @@ readme = "README.md"
 python = "^3.10"
 playwright = "^1.62.0"
 fastapi = "^0.141.1"
-uvicorn = "^0.52.1"
+uvicorn = "^0.52.3"
 requests = "^2.34.2"
 websockets = "^16.1"
 
