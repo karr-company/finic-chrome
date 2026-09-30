@@ -1,22 +1,19 @@
+import asyncio
+import copy
 import logging
+import os
+from typing import Dict, Optional
 
+import httpx
 import uvicorn
-from fastapi import (
-    FastAPI,
-    Request,
-    status,
-    WebSocket,
-)
+from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
-from fastapi.security import HTTPBearer
 from fastapi.middleware.cors import CORSMiddleware
-from playwright.async_api import async_playwright
-from starlette.websockets import WebSocketState
+from fastapi.responses import JSONResponse
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from browser_session import BrowserSession
 from port_manager import PortManager
-
 
 app = FastAPI()
 app.add_middleware(
@@ -27,7 +24,23 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-bearer_scheme = HTTPBearer()
+AUTH_TOKEN = os.getenv("AUTH_TOKEN")
+bearer_scheme = HTTPBearer(auto_error=False)
+
+if not AUTH_TOKEN:
+    logging.warning("AUTH_TOKEN is not set; bearer authentication is disabled")
+
+
+def require_bearer(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
+):
+    if not AUTH_TOKEN:
+        return
+    if credentials is None or credentials.credentials != AUTH_TOKEN:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or missing bearer token",
+        )
 
 
 @app.exception_handler(RequestValidationError)
@@ -40,89 +53,214 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     )
 
 
-port_manager = PortManager(max_connections=10)
+port_manager = PortManager()
+sessions: Dict[str, BrowserSession] = {}
+
+# WebDriver commands (e.g. navigation) can legitimately take a while.
+FORWARD_TIMEOUT = httpx.Timeout(120.0, connect=5.0)
+
+_HOP_BY_HOP_HEADERS = {"host", "content-length", "connection", "authorization"}
 
 
-@app.get("/test")
-async def test():
-    browser_args = [
-        "--window-size=1300,570",
-        "--window-position=000,000",
-        "--disable-dev-shm-usage",
-        "--no-sandbox",
-        "--disable-web-security",
-        "--disable-features=site-per-process",
-        "--disable-setuid-sandbox",
-        "--disable-accelerated-2d-canvas",
-        "--no-first-run",
-        "--no-zygote",
-        "--use-gl=egl",
-        "--disable-blink-features=AutomationControlled",
-        "--disable-background-networking",
-        "--enable-features=NetworkService,NetworkServiceInProcess",
-        "--disable-background-timer-throttling",
-        "--disable-backgrounding-occluded-windows",
-        "--disable-breakpad",
-        "--disable-client-side-phishing-detection",
-        "--disable-component-extensions-with-background-pages",
-        "--disable-default-apps",
-        "--disable-extensions",
-        "--disable-features=Translate",
-        "--disable-hang-monitor",
-        "--disable-ipc-flooding-protection",
-        "--disable-popup-blocking",
-        "--disable-prompt-on-repost",
-        "--disable-renderer-backgrounding",
-        "--disable-sync",
-        "--force-color-profile=srgb",
-        "--metrics-recording-only",
-        "--enable-automation",
-        "--password-store=basic",
-        "--use-mock-keychain",
-        "--hide-scrollbars",
-        "--mute-audio",
-    ]
-    async with async_playwright() as pw:
-        browser = await pw.chromium.launch(
-            args=browser_args + [f"--remote-debugging-port=9222"],
-            headless=False,
-        )
-        context = await browser.new_context()
-        page = await context.new_page()
-        await page.goto("https://example.com")
-        html = await page.content()
-        await browser.close()
+def _merge_capabilities(base: dict, override: Optional[dict]) -> dict:
+    """Merge client-requested capabilities into the server-enforced set.
 
-    return {"html": html}
+    The server always controls the browser binary and --user-data-dir; client
+    args are appended after the hardened BASE_FLAGS.
+    """
+    merged = copy.deepcopy(base)
+    if not override:
+        return merged
+    always = merged["capabilities"]["alwaysMatch"]
+    client_always = (override.get("capabilities") or {}).get("alwaysMatch") or {}
+    for key, value in client_always.items():
+        if key == "goog:chromeOptions":
+            opts = dict(value or {})
+            client_args = opts.pop("args", None) or []
+            opts.pop("binary", None)  # server-controlled
+            client_args = [
+                a for a in client_args if not a.startswith("--user-data-dir")
+            ]
+            chrome_opts = always["goog:chromeOptions"]
+            chrome_opts.update(opts)
+            chrome_opts["args"] = chrome_opts["args"] + client_args
+        else:
+            always[key] = value
+    first_match = (override.get("capabilities") or {}).get("firstMatch")
+    if first_match is not None:
+        merged["capabilities"]["firstMatch"] = first_match
+    return merged
 
 
-@app.websocket("/ws")
-async def websocket_proxy(websocket: WebSocket):
-    print("WebSocket connection accepted")
-    await websocket.accept()
-    error = None
+def _driver_response(resp: httpx.Response) -> Response:
+    return Response(
+        content=resp.content,
+        status_code=resp.status_code,
+        media_type=resp.headers.get("content-type", "application/json"),
+    )
 
-    # Find an available port
+
+@app.get("/status")
+async def health():
+    return {
+        "status": "ok",
+        "sessions": len(sessions),
+        "maxSessions": port_manager.max_connections,
+    }
+
+
+@app.post("/session", dependencies=[Depends(require_bearer)])
+async def create_session(request: Request):
     port = port_manager.get_available_port()
-    if not port:
-        raise Exception("Maximum number of connections reached")
+    if port is None:
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={
+                "value": {
+                    "error": "session not created",
+                    "message": "Maximum number of sessions reached",
+                }
+            },
+        )
     port_manager.mark_port_as_used(port)
+    session = BrowserSession(port=port)
+    try:
+        await asyncio.to_thread(session.start)
+    except Exception as e:
+        port_manager.release(port)
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={
+                "value": {
+                    "error": "session not created",
+                    "message": f"Failed to start chromedriver: {e}",
+                }
+            },
+        )
 
     try:
-        session = BrowserSession(port=port)
-        await session.connect(websocket=websocket)
+        body = await request.json()
+    except Exception:
+        body = None
+    caps = _merge_capabilities(session.capabilities(), body)
 
-    except Exception as e:
-        error = e
-        print(f"WebSocket connection error: {e}")
-    finally:
-        port_manager.mark_port_as_available(port)
-        await session.cleanup()
-        if error:
-            raise error
-        if not websocket.client_state == WebSocketState.DISCONNECTED:
-            await websocket.close()
-            print("WebSocket connection closed by server")
+    async with httpx.AsyncClient(timeout=FORWARD_TIMEOUT) as client:
+        try:
+            resp = await client.post(
+                f"http://127.0.0.1:{port}/session", json=caps
+            )
+        except httpx.RequestError as e:
+            await asyncio.to_thread(session.stop)
+            port_manager.release(port)
+            return JSONResponse(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                content={
+                    "value": {
+                        "error": "session not created",
+                        "message": f"chromedriver unreachable: {e}",
+                    }
+                },
+            )
+
+    session_id = None
+    try:
+        session_id = resp.json().get("value", {}).get("sessionId")
+    except Exception:
+        session_id = None
+
+    if resp.status_code >= 400 or not session_id:
+        await asyncio.to_thread(session.stop)
+        port_manager.release(port)
+        return _driver_response(resp)
+
+    sessions[session_id] = session
+    return _driver_response(resp)
+
+
+@app.delete("/session/{session_id}", dependencies=[Depends(require_bearer)])
+async def delete_session(session_id: str):
+    session = sessions.get(session_id)
+    if session is None:
+        return JSONResponse(
+            status_code=status.HTTP_404_NOT_FOUND,
+            content={
+                "value": {
+                    "error": "invalid session id",
+                    "message": f"Unknown session: {session_id}",
+                }
+            },
+        )
+    async with httpx.AsyncClient(timeout=FORWARD_TIMEOUT) as client:
+        try:
+            resp = await client.delete(
+                f"http://127.0.0.1:{session.port}/session/{session_id}"
+            )
+            response = _driver_response(resp)
+        except httpx.RequestError:
+            # Driver already gone; still clean up local state.
+            response = JSONResponse(content={"value": None})
+    await asyncio.to_thread(session.stop)
+    port_manager.release(session.port)
+    sessions.pop(session_id, None)
+    return response
+
+
+@app.api_route(
+    "/{full_path:path}",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+    dependencies=[Depends(require_bearer)],
+)
+async def forward_to_driver(full_path: str, request: Request):
+    parts = full_path.split("/")
+    if len(parts) >= 2 and parts[0] == "session":
+        session = sessions.get(parts[1])
+        if session is None:
+            return JSONResponse(
+                status_code=status.HTTP_404_NOT_FOUND,
+                content={
+                    "value": {
+                        "error": "invalid session id",
+                        "message": f"Unknown session: {parts[1]}",
+                    }
+                },
+            )
+        body = await request.body()
+        headers = {
+            k: v
+            for k, v in request.headers.items()
+            if k.lower() not in _HOP_BY_HOP_HEADERS
+        }
+        target = f"http://127.0.0.1:{session.port}/{full_path}"
+        if request.url.query:
+            target = f"{target}?{request.url.query}"
+        async with httpx.AsyncClient(timeout=FORWARD_TIMEOUT) as client:
+            try:
+                resp = await client.request(
+                    request.method,
+                    target,
+                    content=body or None,
+                    headers=headers,
+                )
+            except httpx.RequestError as e:
+                return JSONResponse(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    content={
+                        "value": {
+                            "error": "unknown error",
+                            "message": f"chromedriver unreachable: {e}",
+                        }
+                    },
+                )
+            return _driver_response(resp)
+    return JSONResponse(
+        status_code=status.HTTP_404_NOT_FOUND,
+        content={
+            "value": {
+                "error": "unknown command",
+                "message": f"Unknown path: /{full_path}",
+            }
+        },
+    )
 
 
 def start():

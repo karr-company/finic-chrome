@@ -1,26 +1,20 @@
-import asyncio
 import os
-import requests
 import subprocess
+import time
+from glob import glob
 from typing import Optional
-import websockets
-import websockets.client
 
-from fastapi import WebSocket
-from playwright.async_api import async_playwright
-from starlette.websockets import WebSocketDisconnect, WebSocketState
-
-
+import requests
 
 SESSION_PATH = os.path.join(
     os.path.dirname(os.path.realpath(__file__)), "chrome_context"
 )
 
+# Hardened flag set: no --disable-web-security / site-per-process bypass.
+# Keep the anti-automation flag so portals don't fingerprint the driver.
 BASE_FLAGS = [
     "--disable-dev-shm-usage",
     "--no-sandbox",
-    "--disable-web-security",
-    "--disable-features=site-per-process",
     "--disable-setuid-sandbox",
     "--disable-accelerated-2d-canvas",
     "--no-first-run",
@@ -45,7 +39,6 @@ BASE_FLAGS = [
     "--disable-sync",
     "--force-color-profile=srgb",
     "--metrics-recording-only",
-    "--enable-automation",
     "--password-store=basic",
     "--use-mock-keychain",
     "--hide-scrollbars",
@@ -63,106 +56,86 @@ HEADLESS_FLAGS = [
     "--enable-logging=stderr",
 ]
 
+START_TIMEOUT_SECS = 30
+
+
+def _chromium_bin() -> str:
+    """Locate the Playwright-bundled Chromium executable.
+
+    The arch suffix differs by platform: chrome-linux (x64) vs
+    chrome-linux-arm64 (arm64).
+    """
+    matches = sorted(glob("/ms-playwright/chromium-*/chrome-linux*/chrome"))
+    if not matches:
+        raise RuntimeError("No Playwright Chromium found under /ms-playwright")
+    return matches[0]
+
 
 class BrowserSession:
+    """A per-session chromedriver process fronting the Playwright Chromium."""
+
     def __init__(self, port: int):
         self.port = port
         self.data_dir = os.path.join(SESSION_PATH, str(port))
-        self.context = None
-        self.client_websocket: Optional[WebSocket] = None
-        self.browser_websocket: Optional[websockets.client.WebSocketClientProtocol] = (
-            None
-        )
-        
+        self.process: Optional[subprocess.Popen] = None
+
         browser_mode = os.getenv("BROWSER_MODE", "headless").lower()
-        is_headless = browser_mode == "headless"
+        self.is_headless = browser_mode == "headless"
 
-        flags = HEADLESS_FLAGS if is_headless else HEADFUL_FLAGS
-        self.browser_args = flags + BASE_FLAGS
+    def capabilities(self) -> dict:
+        """W3C capabilities for session creation on this session's driver."""
+        flags = HEADLESS_FLAGS if self.is_headless else HEADFUL_FLAGS
+        return {
+            "capabilities": {
+                "alwaysMatch": {
+                    "browserName": "chrome",
+                    "goog:chromeOptions": {
+                        "binary": _chromium_bin(),
+                        "args": BASE_FLAGS
+                        + flags
+                        + [f"--user-data-dir={self.data_dir}"],
+                    },
+                }
+            }
+        }
 
-        self.is_headless = is_headless
-
-    async def connect(self, websocket: WebSocket):
-        self.client_websocket = websocket
-        async with async_playwright() as pw:
-            # Delete the directory if it exists
-            if os.path.exists(self.data_dir):
-                os.system(f"rm -rf {self.data_dir}")
-            self.context = await pw.chromium.launch_persistent_context(
-                user_data_dir=self.data_dir,
-                args=self.browser_args + [f"--remote-debugging-port={self.port}"],
-                headless=self.is_headless,
-            )
-            info = requests.get(f"http://localhost:{self.port}/json/version").json()
-            CDP_WS = info["webSocketDebuggerUrl"]
-
-            async with websockets.connect(CDP_WS) as browser_websocket:
-                self.browser_websocket = browser_websocket
-                print("Connected to remote WebSocket")
-
-                async def browser_to_client(
-                    browser_ws: websockets.client.WebSocketClientProtocol,
-                    client_ws: WebSocket,
-                ):
-                    try:
-                        while True:
-                            message = await browser_ws.recv()
-                            if client_ws.client_state == WebSocketState.CONNECTED:
-                                await client_ws.send_text(message)
-                    except websockets.exceptions.ConnectionClosed as e:
-                        print(f"Remote WebSocket disconnected: {e}")
-                        # Close the client WebSocket connection
-                        if client_ws.client_state == WebSocketState.CONNECTED:
-                            await client_ws.close()
-
-                async def client_to_browser(
-                    client_ws: WebSocket,
-                    browser_ws: websockets.client.WebSocketClientProtocol,
-                ):
-                    try:
-                        while True:
-                            message = await client_ws.receive_text()
-                            if browser_ws.open:
-                                await browser_ws.send(message)
-                    except WebSocketDisconnect as e:
-                        print(f"Client WebSocket disconnected: {e}")
-                        # Close the browser WebSocket connection
-                        if browser_ws.open:
-                            await browser_ws.close()
-
-                # Create tasks to forward messages in both directions
-                await asyncio.gather(
-                    browser_to_client(browser_websocket, websocket),
-                    client_to_browser(websocket, browser_websocket),
+    def start(self):
+        os.makedirs(self.data_dir, exist_ok=True)
+        self.process = subprocess.Popen(
+            [
+                "chromedriver",
+                f"--port={self.port}",
+                "--allowed-ips=",
+                "--allowed-origins=*",
+            ]
+        )
+        deadline = time.time() + START_TIMEOUT_SECS
+        while time.time() < deadline:
+            if self.process.poll() is not None:
+                raise RuntimeError(
+                    f"chromedriver exited early with code {self.process.returncode}"
                 )
+            try:
+                resp = requests.get(
+                    f"http://127.0.0.1:{self.port}/status", timeout=1
+                )
+                if resp.status_code == 200:
+                    return
+            except requests.RequestException:
+                pass
+            time.sleep(0.2)
+        self.stop()
+        raise RuntimeError(
+            f"chromedriver on port {self.port} did not become ready in time"
+        )
 
-    async def cleanup(self):
-        try:
-            if (
-                self.context
-                and self.context.browser
-                and self.context.browser.is_connected()
-            ):
-                await self.context.close()
-                print("Browser closed")
-        except Exception as e:
-            print(f"Error closing the browser: {e}")
-        try:
-            if self.browser_websocket and self.browser_websocket.open:
-                await self.browser_websocket.close()
-                print("Browser WebSocket closed")
-        except Exception as e:
-            print(f"Error closing the browser WebSocket: {e}")
-
-        try:
-            if (
-                self.client_websocket
-                and self.client_websocket.client_state == WebSocketState.CONNECTED
-            ):
-                await self.client_websocket.close()
-                print("Client WebSocket closed")
-        except Exception as e:
-            print(f"Error closing the client WebSocket: {e}")
-
-        if os.path.exists(self.data_dir):
-            subprocess.run(["rm", "-rf", self.data_dir])
+    def stop(self):
+        """Terminate the driver process. The data dir is intentionally kept
+        so cookies/storage persist across sessions on this port."""
+        if self.process and self.process.poll() is None:
+            self.process.terminate()
+            try:
+                self.process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+        self.process = None
