@@ -101,6 +101,7 @@ def _driver_response(resp: httpx.Response) -> Response:
 
 
 @app.get("/status")
+@app.get("/health")
 async def health():
     return {
         "status": "ok",
@@ -111,7 +112,9 @@ async def health():
 
 @app.post("/session", dependencies=[Depends(require_bearer)])
 async def create_session(request: Request):
-    port = port_manager.get_available_port()
+    # Atomically reserve a port; combining find + mark under one lock prevents
+    # two concurrent session creations from being handed the same port.
+    port = port_manager.acquire_port()
     if port is None:
         return JSONResponse(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -122,7 +125,6 @@ async def create_session(request: Request):
                 }
             },
         )
-    port_manager.mark_port_as_used(port)
     session = BrowserSession(port=port)
     try:
         await asyncio.to_thread(session.start)
